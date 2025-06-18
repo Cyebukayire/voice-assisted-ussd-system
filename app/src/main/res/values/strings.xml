@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">prototype</string>
+    <string name="accessibility_service_description">Detects USSD windows to provide voice assistance for mobile money and banking services. This service helps users navigate USSD menus through voice commands.</string>
+</resources>
