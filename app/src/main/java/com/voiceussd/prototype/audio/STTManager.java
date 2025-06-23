@@ -3,6 +3,8 @@ package com.voiceussd.prototype.audio;
 import android.content.Context;
 import android.content.Intent; // Launches activities
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
@@ -37,64 +39,113 @@ public class STTManager implements RecognitionListener{
     }
 
     private void initializeSTT(){
+        Log.d(TAG, "=== INITIALIZING STT ===");
+
         if(SpeechRecognizer.isRecognitionAvailable(context)){
-            Log.d(TAG, "STT: ✅ Speech recognition IS available");
+            Log.d(TAG, "✅ Speech recognition IS available");
+
             speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context);
+            if (speechRecognizer == null) {
+                Log.e(TAG, "❌ Failed to create SpeechRecognizer instance");
+                return;
+            }
+
             speechRecognizer.setRecognitionListener(this);
+            Log.d(TAG, "✅ Recognition listener set");
 
-            Log.d(TAG, "STT: ✅ SpeechRecognizer created: " + (speechRecognizer != null));
-            Log.d(TAG, "STT: ✅ Recognition listener set");
-
-
-            // Recognition intent configurations
+            // Create and configure intent
             recognizerIntent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
 
-            // Specifies type of speech to expect (FREE_FORM = natural speech, WEB_SEARCH = short commands)
-            recognizerIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_WEB_SEARCH);
+            // Try different configurations
+            recognizerIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                    RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
 
-            // Set language to recognize
-//            recognizerIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.ENGLISH.toString());
             recognizerIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US");
 
-            // Don't get partial results while speaking, wait for user to end speech
-            recognizerIntent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false);
+            // IMPORTANT: Enable partial results for better debugging
+            recognizerIntent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
 
-            // Limit possible speech interpretations
-            recognizerIntent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 10);
-
-            // Speech recognition Lower confidence scores
+            // More results and confidence
+            recognizerIntent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3);
             recognizerIntent.putExtra(RecognizerIntent.EXTRA_CONFIDENCE_SCORES, true);
 
-            // User done speaking
-            recognizerIntent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 5000);
+            // Shorter timeouts for single words
+            recognizerIntent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500);
+            recognizerIntent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1000);
 
-            // Allow pause mid-speech/ prepare stt service to stop
-            recognizerIntent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 5000);
+            // Add calling package
+            recognizerIntent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.getPackageName());
 
-            Log.d(TAG, "STT Initialized Successfully");
+            Log.d(TAG, "✅ STT Intent configured");
+            Log.d(TAG, "Language Model: " + RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+            Log.d(TAG, "Language: en-US");
+            Log.d(TAG, "Max Results: 3");
+            Log.d(TAG, "Partial Results: true");
 
             if (callback != null){
-                Log.d(TAG, "STT: ✅ Calling onSTTReady callback");
                 callback.onSTTReady();
-            } else {
-                Log.w(TAG, "STT Warning: ⚠️ No callback set for onSTTReady");
             }
 
-        }else{
-            Log.e(TAG, "STT ERROR: ❌Speech recognition not available on this device");
+        } else {
+            Log.e(TAG, "❌ Speech recognition NOT available on this device");
             if (callback != null){
-                callback.onSTTError("STT Error: Speech recongition not available");
+                callback.onSTTError("Speech recognition not available");
             }
         }
     }
+    // Add this to STTManager.java
+    private boolean testMode = false; // Set to false for real STT
 
     public void startListening(){
-        if(!isListening && speechRecognizer != null){
-            isListening = true;
-            speechRecognizer.startListening(recognizerIntent);
-            Log.d(TAG, "=== STT STARTED LISTENING ===");
+        if (testMode) {
+            // Your existing simulation code
+            Log.d(TAG, "=== TEST MODE: SIMULATING STT ===");
+            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                Bundle fakeResults = new Bundle();
+                ArrayList<String> fakeMatches = new ArrayList<>();
+                fakeMatches.add("one");
+                fakeResults.putStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION, fakeMatches);
+                onResults(fakeResults);
+            }, 2000);
+            return;
         }
+
+        Log.d(TAG, "=== STARTING REAL STT ===");
+
+        if (speechRecognizer == null) {
+            Log.e(TAG, "❌ SpeechRecognizer is null!");
+            return;
+        }
+
+        if (isListening) {
+            Log.w(TAG, "⚠️ Already listening, stopping first...");
+            speechRecognizer.stopListening();
+            isListening = false;
+
+            // Wait a moment before restarting
+            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                startListeningInternal();
+            }, 500);
+            return;
+        }
+
+        startListeningInternal();
     }
+
+//    private void startListeningInternal() {
+//        try {
+//            isListening = true;
+//            Log.d(TAG, "🎤 Calling speechRecognizer.startListening()...");
+//            speechRecognizer.startListening(recognizerIntent);
+//            Log.d(TAG, "✅ startListening() call completed");
+//        } catch (Exception e) {
+//            Log.e(TAG, "❌ Exception during startListening(): " + e.getMessage());
+//            isListening = false;
+//            if (callback != null) {
+//                callback.onSTTError("Failed to start listening: " + e.getMessage());
+//            }
+//        }
+//    }
 
     public void stopListening(){
         if(isListening && speechRecognizer != null){
@@ -142,28 +193,37 @@ public class STTManager implements RecognitionListener{
     // RecognitionListener implementation
     @Override
     public void onReadyForSpeech(Bundle params){
-        Log.d(TAG, "=== READY FOR SPEECH ===");
+        Log.d(TAG, "🟢 === READY FOR SPEECH ===");
+        if (params != null) {
+            for (String key : params.keySet()) {
+                Log.d(TAG, "Ready params[" + key + "] = " + params.get(key));
+            }
+        }
     }
 
     @Override
     public void onBeginningOfSpeech(){
-        Log.d(TAG, "Beginning of detected speech");
+        Log.d(TAG, "🔵 === BEGINNING OF SPEECH DETECTED ===");
     }
 
     @Override
     public void onRmsChanged(float rmsdb){
-        // Audio level changes - can be used for visual feedback
-        Log.d(TAG, "=== AUDIO LEVEL: " + rmsdb + " dB");
+        // Only log significant changes to avoid spam
+        float lastRms = -999;
+        if (Math.abs(rmsdb - lastRms) > 1.0f) {
+            Log.d(TAG, "🔊 Audio Level: " + rmsdb + " dB");
+            lastRms = rmsdb;
+        }
     }
 
     @Override
     public void onBufferReceived(byte[] buffer){
-        // Raw audio bugger - not needed for our use case
+        Log.d(TAG, "📊 Audio buffer received: " + (buffer != null ? buffer.length + " bytes" : "null"));
     }
 
     @Override
     public void onEndOfSpeech(){
-        Log.d(TAG, "End of speech detected");
+        Log.d(TAG, "🔴 === END OF SPEECH DETECTED ===");
         isListening = false;
     }
 
@@ -171,56 +231,137 @@ public class STTManager implements RecognitionListener{
     public void onError(int error){
         isListening = false;
         String errorMessage = getErrorText(error);
-        Log.e(TAG, "STT Error: " + errorMessage);
+        Log.e(TAG, "❌ === STT ERROR: " + errorMessage + " (Code: " + error + ") ===");
+
+        // Log additional context
+        Log.e(TAG, "Error occurred after " + (System.currentTimeMillis() - startTime) + "ms");
 
         if (callback != null){
             callback.onSTTError(errorMessage);
         }
+
+        // Don't auto-retry immediately to avoid infinite loops
+        Log.d(TAG, "Not auto-retrying. User needs to trigger manually.");
     }
 
     @Override
     public void onResults(Bundle results){
         isListening = false;
+        Log.d(TAG, "🎯 === onResults() CALLED ===");
 
-        Log.d(TAG, "=== YAAAAYYYY onResults() CALLED ==="+ results);
+        if (results == null) {
+            Log.e(TAG, "❌ Results bundle is NULL");
+            return;
+        }
+
+        // Log EVERYTHING in the bundle
+        Log.d(TAG, "📋 Results bundle contents:");
+        for (String key : results.keySet()) {
+            Object value = results.get(key);
+            if (value instanceof ArrayList) {
+                ArrayList<?> list = (ArrayList<?>) value;
+                Log.d(TAG, "  " + key + " = ArrayList[" + list.size() + "]: " + list.toString());
+            } else {
+                Log.d(TAG, "  " + key + " = " + value);
+            }
+        }
+
+        // Try to get results with multiple approaches
         ArrayList<String> matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
 
-        if(matches != null && !matches.isEmpty()){
+        if (matches == null) {
+            Log.e(TAG, "❌ RESULTS_RECOGNITION is null");
 
-            Log.d(TAG, "=== SPEECH RESULTS RECEIVED ===");
+            // Try alternative keys
+            Object altResults = results.get("android.speech.extra.RESULTS");
+            Log.d(TAG, "Alternative results key: " + altResults);
 
-            for(int i = 0; i < matches.size(); i++) {
-                Log.d(TAG, "Result " + i + ": " + matches.get(i));
+            return;
+        }
+
+        if (matches.isEmpty()) {
+            Log.e(TAG, "❌ RESULTS_RECOGNITION is empty");
+            return;
+        }
+
+        Log.d(TAG, "✅ === SPEECH RESULTS RECEIVED ===");
+        Log.d(TAG, "Number of matches: " + matches.size());
+
+        for(int i = 0; i < matches.size(); i++) {
+            String match = matches.get(i);
+            Log.d(TAG, "  Result[" + i + "]: '" + match + "' (length=" + match.length() + ")");
+        }
+
+        // Also check confidence scores if available
+        float[] confidences = results.getFloatArray(SpeechRecognizer.CONFIDENCE_SCORES);
+        if (confidences != null) {
+            Log.d(TAG, "Confidence scores:");
+            for (int i = 0; i < confidences.length && i < matches.size(); i++) {
+                Log.d(TAG, "  '" + matches.get(i) + "' confidence: " + confidences[i]);
             }
+        }
 
-            String recognizedText = matches.get(0);
-            Log.d(TAG, "Recognized: " + recognizedText);
+        // Process the results
+        String recognizedText = matches.get(0);
+        Log.d(TAG, "Processing: '" + recognizedText + "'");
 
-            int menuNumber = extractMenuNumber(recognizedText);
+        int menuNumber = extractMenuNumber(recognizedText);
 
-            if(menuNumber != - 1){
-                Log.d(TAG, "=== MENU NUMBER EXTRACTED: " + menuNumber + " ===");
-                if(callback != null){
-                    callback.onNumberRecognized(menuNumber);
-                }
-            }else{
-                Log.w(TAG, "Warning: Could not extract valid menu number");
-                // Continue listening
-                startListening();
+        if(menuNumber != -1){
+            Log.d(TAG, "✅ === EXTRACTED NUMBER: " + menuNumber + " ===");
+            if(callback != null){
+                callback.onNumberRecognized(menuNumber);
             }
-        }else {
-            Log.e(TAG, "=== NO SPEECH MATCHES FOUND ===");
+        } else {
+            Log.w(TAG, "⚠️ No valid number found in: '" + recognizedText + "'");
+            // Don't auto-restart to avoid loops
         }
     }
 
+    // process partial results immediately
     @Override
     public void onPartialResults(Bundle partialResults){
-        // Not necessary for now, the system waits for user to finish speech
-        /*
-        ArrayList<String> matches = partialResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
-        if (matches != null && !matches.isEmpty()) {
-            Log.d(TAG, "Partial: " + matches.get(0));
-        */
+        if (partialResults != null) {
+            ArrayList<String> partialMatches = partialResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+            if (partialMatches != null && !partialMatches.isEmpty()) {
+                String partialText = partialMatches.get(0);
+                Log.d(TAG, "🔄 Partial: '" + partialText + "'");
+
+                // Check if we have a clear number
+                int number = extractMenuNumber(partialText);
+                if (number != -1) {
+                    Log.d(TAG, "✅ === FOUND NUMBER IN PARTIAL: " + number + " ===");
+
+                    // Stop listening immediately
+                    if (speechRecognizer != null && isListening) {
+                        speechRecognizer.stopListening();
+                        isListening = false;
+                    }
+
+                    // Process the result
+                    if (callback != null) {
+                        callback.onNumberRecognized(number);
+                    }
+                }
+            }
+        }
+    }
+
+    // Add a start time tracker
+    private long startTime;
+
+    // Modify your startListeningInternal to track timing
+    private void startListeningInternal() {
+        try {
+            isListening = true;
+            startTime = System.currentTimeMillis();
+            Log.d(TAG, "🎤 Starting speech recognition at " + startTime);
+            speechRecognizer.startListening(recognizerIntent);
+            Log.d(TAG, "✅ startListening() call completed");
+        } catch (Exception e) {
+            Log.e(TAG, "❌ Exception: " + e.getMessage());
+            isListening = false;
+        }
     }
 
     @Override

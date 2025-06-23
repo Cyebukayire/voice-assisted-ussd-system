@@ -2,6 +2,8 @@ package com.voiceussd.prototype.services;
 
 import android.accessibilityservice.AccessibilityService;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.view.accessibility.AccessibilityNodeInfo;
 
@@ -30,15 +32,18 @@ public class InputSimulator{
             return false;
         }
 
-        //Step 2: Click SEND Button
-        boolean sendSuccess = clickSendButton();
-        if(!sendSuccess){
-            Log.e(TAG, "Failed to click SEND Button");
-            return false;
-        }
+        // Step 2: Wait 2 seconds, then click SEND Button
+        Log.d(TAG, "Waiting 2 seconds before sending...");
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            boolean sendSuccess = clickSendButton();
+            if(!sendSuccess){
+                Log.e(TAG, "Failed to click SEND Button");
+            } else {
+                Log.d(TAG, "=== SUCCESSFULLY SUBMITTED: "+ number + " ===");
+            }
+        }, 2000); // 2 second delay
 
-        Log.d(TAG, "=== SUCCESSFULLY SUBMITTED: "+ number + " ===");
-        return true;
+        return true; // Return true since input was successful, send happens after delay
     }
 
     private boolean inputNumber(int number){
