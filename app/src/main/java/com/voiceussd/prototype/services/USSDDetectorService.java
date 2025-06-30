@@ -20,6 +20,17 @@ public class USSDDetectorService extends AccessibilityService {
     private String currentUSSDContent = "";
     private Handler mainHandler = new Handler(Looper.getMainLooper());
 
+    // NEW: State machine for digit-by-digit input
+    private enum DigitInputState {
+        IDLE,                    // Not in digit input mode
+        WAITING_FOR_FIRST_DIGIT, // Just started, waiting for first digit
+        WAITING_FOR_NEXT_DIGIT,  // Got a digit, waiting for next one
+        COMPLETED               // User said "done" or timeout reached
+    }
+
+    private DigitInputState digitInputState = DigitInputState.IDLE;
+    private StringBuilder currentDigitInput = new StringBuilder();
+
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
         if (event == null) return;
@@ -27,7 +38,7 @@ public class USSDDetectorService extends AccessibilityService {
         String packageName = event.getPackageName() != null ? event.getPackageName().toString() : "";
         String className = event.getClassName() != null ? event.getClassName().toString() : "";
 
-        // TEMPORARY: Log ALL phone-related dialogs
+        // Log phone-related dialogs for debugging
         boolean isPhoneRelated = packageName.contains("phone") || packageName.contains("dialer");
         boolean isDialog = className.contains("AlertDialog");
 
@@ -39,9 +50,6 @@ public class USSDDetectorService extends AccessibilityService {
             Log.d(TAG, "==========================================");
         }
 
-        Log.d(TAG, "Event" + event.getEventType() +
-                ", Package: " + packageName + ", Class: " + className);
-
         if (isUSSDDialog(event, packageName, className)) {
             if (!isUSSDActive) {
                 isUSSDActive = true;
@@ -50,11 +58,11 @@ public class USSDDetectorService extends AccessibilityService {
             }
         } else if (isUSSDActive && isUSSDWindowClosed(event, packageName, className)) {
             isUSSDActive = false;
+            digitInputState = DigitInputState.IDLE; // Reset state
             Log.d(TAG, "=== USSD WINDOW CLOSED ====");
         }
     }
 
-    // KEEP: Your existing working USSD detection
     private boolean isUSSDDialog(AccessibilityEvent event, String packageName, String className) {
         boolean isPhoneRelated = packageName.contains("phone") || packageName.contains("dialer") ||
                 packageName.contains("telecom") || packageName.contains("telephony") ||
@@ -68,10 +76,9 @@ public class USSDDetectorService extends AccessibilityService {
             hasUSSDContent = text.contains("ussd") || text.contains("ussd code") || text.contains("1)") ||
                     text.contains("n next") || text.contains("balance") || text.contains("amafaranga") ||
                     text.contains("kwemeza") || text.contains("pin") || text.contains("shyiramo") ||
-                    // ADD THESE FOR PHONE NUMBER DETECTION:
                     text.contains("mobile number") || text.contains("nimero ya mobile") ||
                     text.contains("recipient") || text.contains("07xxxxxxxx") ||
-                    text.contains("format 07") || text.contains("enter recipient");
+                    text.contains("format 07") || text.contains("enter") || text.contains("amount");
         }
 
         return (isPhoneRelated && isDialog) && hasUSSDContent;
@@ -91,44 +98,48 @@ public class USSDDetectorService extends AccessibilityService {
                     Log.d(TAG, "USSD Content: " + currentUSSDContent);
                     Log.d(TAG, "Has Input Field: " + hasInputField);
 
-                    // ANALYZE DIFFERENT WINDOW TYPES
+                    // Analyze different window types
                     String lowerContent = currentUSSDContent.toLowerCase();
 
                     if (lowerContent.contains("pin") || lowerContent.contains("umubare w'ibanga")) {
                         analyzeInputFields(rootNode, "PIN");
-                        handleInputWindow();
+                        handleDigitByDigitInputWindow("Enter your PIN");
                     } else if (lowerContent.contains("mobile number") || lowerContent.contains("nimero ya mobile") ||
                             lowerContent.contains("07xxxxxxxx")) {
                         analyzeInputFields(rootNode, "PHONE NUMBER");
-                        handleInputWindow();
+                        handleDigitByDigitInputWindow("Enter phone number starting with zero seven");
+                    } else if (lowerContent.contains("enter amount") || lowerContent.contains("amafaranga")) {
+                        Log.d(TAG, "AMOUNT WINDOW OPEN: " + event.getText());
+                        analyzeInputFields(rootNode, "AMOUNT");
+                        handleDigitByDigitInputWindow("Enter the amount to send");
                     } else if (isMenuContent(currentUSSDContent)) {
                         analyzeInputFields(rootNode, "MENU");
                         handleMenuWindow();
                     } else if (hasInputField) {
                         analyzeInputFields(rootNode, "UNKNOWN INPUT");
-                        handleInputWindow();
+                        handleDigitByDigitInputWindow("Please provide the requested information");
                     } else {
                         analyzeInputFields(rootNode, "READ-ONLY");
                         handleReadOnlyWindow();
                     }
 
                     rootNode.recycle();
+                }else{
+                    Log.d(TAG, "ROOT NODE IS NULL & TEXT IS: " + event.getText());
                 }
             }
         }
     }
-    // NEW: Detect if window has an input field
+
     private boolean detectInputField(AccessibilityNodeInfo node) {
         if (node == null) return false;
 
-        // Check if current node is an input field
         String className = node.getClassName() != null ? node.getClassName().toString() : "";
         if ("android.widget.EditText".equals(className) || node.isEditable()) {
             Log.d(TAG, "Found input field: " + className);
             return true;
         }
 
-        // Check children recursively
         for (int i = 0; i < node.getChildCount(); i++) {
             AccessibilityNodeInfo child = node.getChild(i);
             if (child != null) {
@@ -143,44 +154,106 @@ public class USSDDetectorService extends AccessibilityService {
         return false;
     }
 
-    // NEW: Handle menu window (your existing working logic)
+    // KEEP: Your existing working menu logic
     private void handleMenuWindow() {
         Log.d(TAG, "=== HANDLING MENU WINDOW ===");
-
-        // Set STT to menu mode
+        digitInputState = DigitInputState.IDLE; // Ensure we're not in digit mode
         sttManager.setInputMode(STTManager.InputMode.MENU);
 
-        // Speak the menu (your existing working TTS)
         if (!currentUSSDContent.isEmpty()) {
             ttsManager.speakMenu(currentUSSDContent);
         }
     }
 
-    // NEW: Handle input window (PIN, phone, amount, etc.)
-    private void handleInputWindow() {
-        Log.d(TAG, "=== HANDLING INPUT WINDOW ===");
+    // NEW: Handle digit-by-digit input
+    private void handleDigitByDigitInputWindow(String promptText) {
+        Log.d(TAG, "=== HANDLING DIGIT-BY-DIGIT INPUT WINDOW ===");
 
-        // Set STT to long input mode
-        sttManager.setInputMode(STTManager.InputMode.LONG_INPUT);
+        // Reset state
+        digitInputState = DigitInputState.WAITING_FOR_FIRST_DIGIT;
+        currentDigitInput.setLength(0);
 
-        // Speak instruction for input
-        String speechText = "Please provide the requested information: " + currentUSSDContent +
-                ". Speak each digit clearly, one at a time.";
+        // Switch STT to digit-by-digit mode
+        sttManager.setInputMode(STTManager.InputMode.DIGIT_BY_DIGIT);
 
-        // Use a simple TTS call (not the menu parser)
-        ttsManager.speakSimpleText(speechText);
+        // Start the session with TTS
+        ttsManager.speakDigitInputStart(promptText);
     }
 
-    // NEW: Handle read-only window
     private void handleReadOnlyWindow() {
         Log.d(TAG, "=== HANDLING READ-ONLY WINDOW ===");
-
-        // Just speak the content, no STT needed
+        digitInputState = DigitInputState.IDLE;
         String speechText = currentUSSDContent;
-        ttsManager.speakSimpleText(speechText);
+        ttsManager.speakSimpleText(speechText, false);
     }
 
-    // KEEP: Your existing text extraction logic
+    // NEW: Handle individual digit recognition
+    private void handleDigitRecognized(int digit) {
+        Log.d(TAG, "=== PROCESSING RECOGNIZED DIGIT: " + digit + " ===");
+
+        // Add digit to input field
+        boolean success = inputSimulator.inputSingleDigit(digit);
+        if (!success) {
+            Log.e(TAG, "Failed to input digit: " + digit);
+            return;
+        }
+
+        // Update our local tracking
+        currentDigitInput.append(digit);
+
+        // Update state
+        if (digitInputState == DigitInputState.WAITING_FOR_FIRST_DIGIT) {
+            digitInputState = DigitInputState.WAITING_FOR_NEXT_DIGIT;
+        }
+
+        // Provide audio confirmation and prompt for next digit
+        ttsManager.confirmDigitAndPromptNext(digit, currentDigitInput.toString());
+    }
+
+    // NEW: Handle "done" command
+    private void handleDoneCommand() {
+        Log.d(TAG, "=== PROCESSING DONE COMMAND ===");
+
+        if (currentDigitInput.length() > 0) {
+            digitInputState = DigitInputState.COMPLETED;
+
+            // Speak completion confirmation
+            ttsManager.speakInputCompletion(currentDigitInput.toString());
+
+            // Submit the input
+            boolean success = inputSimulator.submitLongInput(currentDigitInput.toString());
+            if (!success) {
+                Log.e(TAG, "Failed to submit long input");
+            }
+
+            // Reset for next session
+            currentDigitInput.setLength(0);
+            digitInputState = DigitInputState.IDLE;
+        } else {
+            Log.w(TAG, "Done command received but no digits entered");
+        }
+    }
+
+    // NEW: Handle timeout completion
+    private void handleLongInputCompleted(String fullInput) {
+        Log.d(TAG, "=== PROCESSING INPUT COMPLETION (TIMEOUT): " + fullInput + " ===");
+
+        digitInputState = DigitInputState.COMPLETED;
+
+        // Speak completion confirmation
+        ttsManager.speakInputCompletion(fullInput);
+
+        // Submit the input
+        boolean success = inputSimulator.submitLongInput(fullInput);
+        if (!success) {
+            Log.e(TAG, "Failed to submit long input");
+        }
+
+        // Reset for next session
+        currentDigitInput.setLength(0);
+        digitInputState = DigitInputState.IDLE;
+    }
+
     private void extractUSSDText(AccessibilityNodeInfo node) {
         if (node == null) return;
 
@@ -189,13 +262,11 @@ public class USSDDetectorService extends AccessibilityService {
             String textStr = text.toString();
             Log.d(TAG, "Node Text: " + textStr);
 
-            // Collect content
             if (isRelevantUSSDContent(textStr)) {
                 currentUSSDContent += textStr + " ";
             }
         }
 
-        // Check all child nodes
         for (int i = 0; i < node.getChildCount(); i++) {
             AccessibilityNodeInfo child = node.getChild(i);
             if (child != null) {
@@ -205,7 +276,6 @@ public class USSDDetectorService extends AccessibilityService {
         }
     }
 
-    // Add this NEW method to your USSDDetectorService
     private void analyzeInputFields(AccessibilityNodeInfo rootNode, String windowType) {
         Log.d(TAG, "========== " + windowType + " WINDOW INPUT ANALYSIS ==========");
         Log.d(TAG, "Content: " + currentUSSDContent);
@@ -222,7 +292,6 @@ public class USSDDetectorService extends AccessibilityService {
         String text = node.getText() != null ? node.getText().toString() : "null";
         String contentDesc = node.getContentDescription() != null ? node.getContentDescription().toString() : "null";
 
-        // Log ALL nodes but highlight interesting ones
         boolean isInteresting = className.contains("Edit") ||
                 node.isEditable() ||
                 node.isClickable() ||
@@ -239,21 +308,16 @@ public class USSDDetectorService extends AccessibilityService {
             Log.d(TAG, indent + "    ContentDesc: '" + contentDesc + "'");
             Log.d(TAG, indent + "    Editable: " + node.isEditable());
             Log.d(TAG, indent + "    Clickable: " + node.isClickable());
-            Log.d(TAG, indent + "    Focusable: " + node.isFocusable());
-            Log.d(TAG, indent + "    Enabled: " + node.isEnabled());
 
-            // Special marking for likely input fields
             if (className.contains("Edit") || node.isEditable()) {
                 Log.d(TAG, indent + "    🎯 LIKELY INPUT FIELD!");
             }
 
-            // Special marking for likely buttons
             if (resourceId.contains("button") || text.toLowerCase().contains("send") || text.toLowerCase().contains("ok")) {
                 Log.d(TAG, indent + "    🔘 LIKELY BUTTON!");
             }
         }
 
-        // Recursively analyze children
         for (int i = 0; i < node.getChildCount(); i++) {
             AccessibilityNodeInfo child = node.getChild(i);
             if (child != null) {
@@ -263,7 +327,6 @@ public class USSDDetectorService extends AccessibilityService {
         }
     }
 
-    // UPDATE: Check for any relevant content (not just menu)
     private boolean isRelevantUSSDContent(String text) {
         String lowerText = text.toLowerCase();
         return !lowerText.equals("ok") &&
@@ -273,7 +336,6 @@ public class USSDDetectorService extends AccessibilityService {
                 text.trim().length() > 2;
     }
 
-    // KEEP: Your existing menu detection logic
     private boolean isMenuContent(String text) {
         return text.contains("1)") || text.contains("0)");
     }
@@ -298,7 +360,7 @@ public class USSDDetectorService extends AccessibilityService {
         // Initialize input simulator
         inputSimulator = new InputSimulator(this);
 
-        // Initialize STT with EXTENDED callback
+        // Initialize STT with enhanced callback
         sttManager = new STTManager(this, new STTManager.STTCallback() {
             @Override
             public void onNumberRecognized(int number) {
@@ -312,22 +374,20 @@ public class USSDDetectorService extends AccessibilityService {
 
             @Override
             public void onDigitRecognized(int digit) {
-                // NEW: Handle real-time digit input
-                Log.d(TAG, "=== USER SPOKE DIGIT: " + digit + " ===");
-                boolean success = inputSimulator.inputSingleDigit(digit);
-                if (!success) {
-                    Log.e(TAG, "Failed to input digit: " + digit);
-                }
+                // NEW: Handle digit-by-digit input
+                handleDigitRecognized(digit);
+            }
+
+            @Override
+            public void onDoneCommandRecognized() {
+                // NEW: Handle "done" command
+                handleDoneCommand();
             }
 
             @Override
             public void onLongInputCompleted(String fullInput) {
-                // NEW: Handle completed long input
-                Log.d(TAG, "=== LONG INPUT COMPLETED: " + fullInput + " ===");
-                boolean success = inputSimulator.submitLongInput(fullInput);
-                if (!success) {
-                    Log.e(TAG, "Failed to submit long input");
-                }
+                // NEW: Handle timeout completion
+                handleLongInputCompleted(fullInput);
             }
 
             @Override
@@ -341,22 +401,32 @@ public class USSDDetectorService extends AccessibilityService {
             }
         });
 
-        // KEEP: Your existing working TTS to STT connection
+        // Enhanced TTS to STT connection
         ttsManager.setSTTCallback(new TTSManager.STTTriggerCallback() {
             @Override
             public void onTTSFinished() {
-                mainHandler.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        if (sttManager != null && sttManager.isReady()) {
-                            sttManager.startListening();
-                        }
+                // Original behavior - for menu and initial input prompts
+                mainHandler.post(() -> {
+                    if (sttManager != null && sttManager.isReady()) {
+                        sttManager.startListening();
+                    }
+                });
+            }
+
+            @Override
+            public void onDigitConfirmationFinished() {
+                // NEW: After digit confirmation, start listening for next digit
+                mainHandler.post(() -> {
+                    if (sttManager != null && sttManager.isReady() &&
+                            digitInputState == DigitInputState.WAITING_FOR_NEXT_DIGIT) {
+                        Log.d(TAG, "Starting to listen for next digit...");
+                        sttManager.startListening();
                     }
                 });
             }
         });
 
-        // KEEP: Your existing accessibility service configuration
+        // Configure accessibility service
         AccessibilityServiceInfo info = new AccessibilityServiceInfo();
         info.eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED |
                 AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED |

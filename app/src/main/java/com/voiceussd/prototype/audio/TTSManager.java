@@ -47,18 +47,18 @@ public class TTSManager implements TextToSpeech.OnInitListener {
         }
     }
 
-    // KEEP: Your existing STT callback interface
+    // Enhanced callback interface for digit-by-digit flow
     private STTTriggerCallback sttCallback;
 
     public interface STTTriggerCallback {
         void onTTSFinished();
+        void onDigitConfirmationFinished();  // NEW: For after digit confirmation
     }
 
     public void setSTTCallback(STTTriggerCallback callback) {
         this.sttCallback = callback;
     }
 
-    // KEEP: Your existing utterance listener
     private void setupUtteranceListener() {
         tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
             @Override
@@ -70,13 +70,21 @@ public class TTSManager implements TextToSpeech.OnInitListener {
             public void onDone(String utteranceId) {
                 Log.d(TAG, "=== TTS FINISHED - utteranceId: " + utteranceId + " ===");
 
-                // Only trigger STT for utterances that expect input
-                if ("ussd_menu".equals(utteranceId) || "ussd_input".equals(utteranceId)) {
-                    Log.d(TAG, "=== READY TO LISTEN ===");
+                // Handle different types of TTS completion
+                if ("ussd_menu".equals(utteranceId) || "ussd_input_start".equals(utteranceId)) {
+                    // Original behavior - trigger STT after menu or initial input prompt
+                    Log.d(TAG, "=== READY TO LISTEN (INITIAL) ===");
                     if (sttCallback != null) {
                         sttCallback.onTTSFinished();
                     }
+                } else if ("digit_confirmation".equals(utteranceId) || "next_digit_prompt".equals(utteranceId)) {
+                    // NEW: After digit confirmation, trigger next digit listening
+                    Log.d(TAG, "=== READY FOR NEXT DIGIT ===");
+                    if (sttCallback != null) {
+                        sttCallback.onDigitConfirmationFinished();
+                    }
                 } else {
+                    // Read-only content or completion messages
                     Log.d(TAG, "Read-only content finished, no STT needed");
                 }
             }
@@ -110,9 +118,71 @@ public class TTSManager implements TextToSpeech.OnInitListener {
         tts.speak(speechText, TextToSpeech.QUEUE_FLUSH, params, "ussd_menu");
     }
 
-    // NEW: Method for simple text speaking (input fields and read-only)
+    // NEW: Start digit-by-digit input session
+    public void speakDigitInputStart(String inputPrompt) {
+        if (!isTTSReady) {
+            Log.w(TAG, "TTS not ready yet");
+            return;
+        }
+
+        String speechText = inputPrompt + ". Say the first digit.";
+        Log.d(TAG, "Speaking digit input start: " + speechText);
+
+        Bundle params = new Bundle();
+        params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "ussd_input_start");
+        tts.speak(speechText, TextToSpeech.QUEUE_FLUSH, params, "ussd_input_start");
+    }
+
+    // NEW: Confirm digit and prompt for next
+    public void confirmDigitAndPromptNext(int digit, String currentInput) {
+        if (!isTTSReady) {
+            Log.w(TAG, "TTS not ready yet");
+            return;
+        }
+
+        String speechText = "Got " + digit + ". Current input: " + formatInputForSpeech(currentInput) + ". Say next digit or done.";
+        Log.d(TAG, "Speaking digit confirmation: " + speechText);
+
+        Bundle params = new Bundle();
+        params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "digit_confirmation");
+        tts.speak(speechText, TextToSpeech.QUEUE_FLUSH, params, "digit_confirmation");
+    }
+
+    // NEW: Completion confirmation
+    public void speakInputCompletion(String finalInput) {
+        if (!isTTSReady) {
+            Log.w(TAG, "TTS not ready yet");
+            return;
+        }
+
+        String speechText = "Input completed: " + formatInputForSpeech(finalInput) + ". Submitting.";
+        Log.d(TAG, "Speaking input completion: " + speechText);
+
+        Bundle params = new Bundle();
+        params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "input_completion");
+        tts.speak(speechText, TextToSpeech.QUEUE_FLUSH, params, "input_completion");
+    }
+
+    // NEW: Helper to format input for clear speech
+    private String formatInputForSpeech(String input) {
+        if (input == null || input.isEmpty()) {
+            return "empty";
+        }
+
+        // Add spaces between digits for clearer pronunciation
+        StringBuilder formatted = new StringBuilder();
+        for (int i = 0; i < input.length(); i++) {
+            if (i > 0) {
+                formatted.append(" ");
+            }
+            formatted.append(input.charAt(i));
+        }
+        return formatted.toString();
+    }
+
+    // KEEP: Your existing speakSimpleText method for other cases
     public void speakSimpleText(String text) {
-        speakSimpleText(text, true); // Default to expecting input
+        speakSimpleText(text, true);
     }
 
     public void speakSimpleText(String text, boolean expectsInput) {
@@ -123,7 +193,7 @@ public class TTSManager implements TextToSpeech.OnInitListener {
 
         Log.d(TAG, "Speaking simple text: " + text + " (expects input: " + expectsInput + ")");
 
-        String utteranceId = expectsInput ? "ussd_input" : "ussd_readonly";
+        String utteranceId = expectsInput ? "ussd_input_start" : "ussd_readonly";
 
         Bundle params = new Bundle();
         params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId);

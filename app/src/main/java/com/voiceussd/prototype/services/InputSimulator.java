@@ -46,49 +46,57 @@ public class InputSimulator {
     }
 
     // NEW: Method for real-time digit input
+    // Updated inputSingleDigit method in InputSimulator class
+
     public boolean inputSingleDigit(int digit) {
         Log.d(TAG, "=== INPUTTING SINGLE DIGIT: " + digit + " ===");
 
-        // Get current text and append the new digit
-        AccessibilityNodeInfo rootNode = accessibilityService.getRootInActiveWindow();
-        if (rootNode == null) {
-            Log.e(TAG, "No active window found for digit input");
-            return false;
-        }
+        // Add small delay to ensure UI is ready and previous operations are complete
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
 
-        try {
-            AccessibilityNodeInfo inputField = findInputField(rootNode);
-            if (inputField == null) {
-                Log.e(TAG, "Input field not found for digit input");
-                return false;
+            // Get current text and append the new digit
+            AccessibilityNodeInfo rootNode = accessibilityService.getRootInActiveWindow();
+            if (rootNode == null) {
+                Log.e(TAG, "No active window found for digit input");
+                return;
             }
 
-            // Get current text
-            String currentText = "";
-            CharSequence existingText = inputField.getText();
-            if (existingText != null) {
-                currentText = existingText.toString();
+            try {
+                AccessibilityNodeInfo inputField = findInputField(rootNode);
+                if (inputField == null) {
+                    Log.e(TAG, "Input field not found for digit input");
+                    return;
+                }
+
+                // Get current text
+                String currentText = "";
+                CharSequence existingText = inputField.getText();
+                if (existingText != null) {
+                    currentText = existingText.toString();
+                }
+
+                // Append new digit
+                String newText = currentText + digit;
+
+                // Set the updated text
+                Bundle arguments = new Bundle();
+                arguments.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, newText);
+                boolean success = inputField.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments);
+
+                if (success) {
+                    Log.d(TAG, "Successfully added digit: " + digit + " (Full text: '" + newText + "')");
+                } else {
+                    Log.e(TAG, "Failed to add digit: " + digit);
+                }
+
+                inputField.recycle();
+            } finally {
+                rootNode.recycle();
             }
 
-            // Append new digit
-            String newText = currentText + digit;
+        }, 100); // 100ms delay
 
-            // Set the updated text
-            Bundle arguments = new Bundle();
-            arguments.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, newText);
-            boolean success = inputField.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments);
-
-            if (success) {
-                Log.d(TAG, "Successfully added digit: " + digit + " (Full text: '" + newText + "')");
-            } else {
-                Log.e(TAG, "Failed to add digit: " + digit);
-            }
-
-            inputField.recycle();
-            return success;
-        } finally {
-            rootNode.recycle();
-        }
+        return true; // Return true immediately since the actual work happens in the handler
     }
 
     // NEW: Method to submit the complete long input

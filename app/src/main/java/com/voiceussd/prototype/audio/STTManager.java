@@ -20,23 +20,23 @@ public class STTManager implements RecognitionListener {
     private boolean isListening = false;
     private STTCallback callback;
 
-    // NEW: Add input mode
+    // NEW: Enhanced input modes with digit-by-digit approach
     private InputMode currentMode = InputMode.MENU;
     private StringBuilder longInputBuffer = new StringBuilder();
     private Handler timeoutHandler = new Handler(Looper.getMainLooper());
     private Runnable timeoutRunnable;
 
-    // NEW: Input modes
     public enum InputMode {
-        MENU,      // Single digit (existing working functionality)
-        LONG_INPUT // Multi-digit real-time input
+        MENU,           // Single digit for menu selection (existing working functionality)
+        DIGIT_BY_DIGIT  // NEW: Single digit sessions with confirmation loop
     }
 
-    // Interface for communicating back to USSDDetectorService
+    // Enhanced interface for digit-by-digit flow
     public interface STTCallback {
-        void onNumberRecognized(int number);        // For menu (existing)
-        void onDigitRecognized(int digit);          // NEW: For real-time digits
-        void onLongInputCompleted(String fullInput); // NEW: When 3s timeout reached
+        void onNumberRecognized(int number);           // For menu (existing)
+        void onDigitRecognized(int digit);             // NEW: Single digit captured
+        void onDoneCommandRecognized();                // NEW: User said "done"
+        void onLongInputCompleted(String fullInput);   // NEW: Timeout or completion
         void onSTTError(String error);
         void onSTTReady();
     }
@@ -51,12 +51,11 @@ public class STTManager implements RecognitionListener {
         this.callback = callback;
     }
 
-    // NEW: Method to switch input modes
     public void setInputMode(InputMode mode) {
         this.currentMode = mode;
-        if (mode == InputMode.LONG_INPUT) {
+        if (mode == InputMode.DIGIT_BY_DIGIT) {
             longInputBuffer.setLength(0); // Clear buffer
-            setupLongInputConfiguration();
+            setupDigitByDigitConfiguration();
         } else {
             setupMenuConfiguration();
         }
@@ -64,23 +63,23 @@ public class STTManager implements RecognitionListener {
     }
 
     private void setupMenuConfiguration() {
-        // Keep your existing working configuration
         if (recognizerIntent == null) return;
 
+        // Keep your existing working menu configuration
         recognizerIntent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500);
         recognizerIntent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1500);
         recognizerIntent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
         Log.d(TAG, "Configured for MENU mode (1.5s timeout)");
     }
 
-    private void setupLongInputConfiguration() {
-        // Shorter timeouts for real-time digit capture
+    private void setupDigitByDigitConfiguration() {
         if (recognizerIntent == null) return;
 
-        recognizerIntent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 800);
-        recognizerIntent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 600);
+        // NEW: Use same timeouts as menu (which work great!) for individual digit sessions
+        recognizerIntent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500);
+        recognizerIntent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1500);
         recognizerIntent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
-        Log.d(TAG, "Configured for LONG_INPUT mode (0.8s timeout for digits)");
+        Log.d(TAG, "Configured for DIGIT_BY_DIGIT mode (1.5s timeout per digit)");
     }
 
     private void initializeSTT() {
@@ -98,11 +97,11 @@ public class STTManager implements RecognitionListener {
             speechRecognizer.setRecognitionListener(this);
             Log.d(TAG, "✅ Recognition listener set");
 
-            // Create and configure intent (keep your working configuration)
+            // Create and configure intent
             recognizerIntent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
             recognizerIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
             recognizerIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US");
-            recognizerIntent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3);
+            recognizerIntent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5);
             recognizerIntent.putExtra(RecognizerIntent.EXTRA_CONFIDENCE_SCORES, true);
             recognizerIntent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.getPackageName());
 
@@ -136,7 +135,7 @@ public class STTManager implements RecognitionListener {
 
             new Handler(Looper.getMainLooper()).postDelayed(() -> {
                 startListeningInternal();
-            }, 500);
+            }, 1000);
             return;
         }
 
@@ -148,9 +147,9 @@ public class STTManager implements RecognitionListener {
             isListening = true;
             Log.d(TAG, "🎤 Starting " + currentMode + " recognition...");
 
-            // For long input, start the 3-second completion timeout
-            if (currentMode == InputMode.LONG_INPUT) {
-                startLongInputTimeout();
+            // NEW: For digit-by-digit, start a completion timeout (longer than individual digit timeout)
+            if (currentMode == InputMode.DIGIT_BY_DIGIT) {
+                startCompletionTimeout();
             }
 
             speechRecognizer.startListening(recognizerIntent);
@@ -161,16 +160,16 @@ public class STTManager implements RecognitionListener {
         }
     }
 
-    private void startLongInputTimeout() {
+    private void startCompletionTimeout() {
         // Cancel any existing timeout
         if (timeoutRunnable != null) {
             timeoutHandler.removeCallbacks(timeoutRunnable);
         }
 
-        // Set 3-second timeout for long input completion
+        // NEW: 8-second timeout for overall completion (user has time to say "done")
         timeoutRunnable = () -> {
-            if (currentMode == InputMode.LONG_INPUT && longInputBuffer.length() > 0) {
-                Log.d(TAG, "⏰ Long input timeout reached. Completing input: " + longInputBuffer.toString());
+            if (currentMode == InputMode.DIGIT_BY_DIGIT && longInputBuffer.length() > 0) {
+                Log.d(TAG, "⏰ Overall completion timeout reached (8s). Completing input: " + longInputBuffer.toString());
                 if (callback != null) {
                     callback.onLongInputCompleted(longInputBuffer.toString());
                 }
@@ -178,13 +177,13 @@ public class STTManager implements RecognitionListener {
             }
         };
 
-        timeoutHandler.postDelayed(timeoutRunnable, 3000); // 3 seconds
+        timeoutHandler.postDelayed(timeoutRunnable, 8000); // 8 seconds total
     }
 
-    private void resetLongInputTimeout() {
-        if (currentMode == InputMode.LONG_INPUT && timeoutRunnable != null) {
+    private void resetCompletionTimeout() {
+        if (currentMode == InputMode.DIGIT_BY_DIGIT && timeoutRunnable != null) {
             timeoutHandler.removeCallbacks(timeoutRunnable);
-            startLongInputTimeout(); // Restart the 3-second timer
+            startCompletionTimeout(); // Restart the 8-second timer
         }
     }
 
@@ -220,28 +219,47 @@ public class STTManager implements RecognitionListener {
         }
     }
 
-    // Extract single digit from speech (keep your working logic)
-    private int extractMenuNumber(String speech) {
-        String lowerSpeech = speech.toLowerCase();
-        Log.d(TAG, "===> Parsing speech: " + speech);
+    // ENHANCED: Better digit and command extraction
+    private int extractDigit(String speech) {
+        String lowerSpeech = speech.toLowerCase().trim();
+        Log.d(TAG, "===> Parsing speech for digit: '" + speech + "'");
 
-        // Your existing working logic
-        if (lowerSpeech.contains("zero")) return 0;
-        if (lowerSpeech.contains("one") || lowerSpeech.contains("1")) return 1;
-        if (lowerSpeech.contains("two")) return 2;
-        if (lowerSpeech.contains("three")) return 3;
-        if (lowerSpeech.contains("four")) return 4;
-        if (lowerSpeech.contains("five")) return 5;
-        if (lowerSpeech.contains("six")) return 6;
-        if (lowerSpeech.contains("seven")) return 7;
-        if (lowerSpeech.contains("eight")) return 8;
-        if (lowerSpeech.contains("nine")) return 9;
+        // Handle various ways people say digits
+        if (lowerSpeech.contains("zero") || lowerSpeech.equals("0")) return 0;
+        if (lowerSpeech.contains("one") || lowerSpeech.equals("1") || lowerSpeech.contains("won")) return 1;
+        if (lowerSpeech.contains("two") || lowerSpeech.equals("2") || lowerSpeech.contains("too")) return 2;
+        if (lowerSpeech.contains("three") || lowerSpeech.equals("3") || lowerSpeech.contains("tree")) return 3;
+        if (lowerSpeech.contains("four") || lowerSpeech.equals("4") || lowerSpeech.contains("for")) return 4;
+        if (lowerSpeech.contains("five") || lowerSpeech.equals("5")) return 5;
+        if (lowerSpeech.contains("six") || lowerSpeech.equals("6") || lowerSpeech.contains("sicks")) return 6;
+        if (lowerSpeech.contains("seven") || lowerSpeech.equals("7")) return 7;
+        if (lowerSpeech.contains("eight") || lowerSpeech.equals("8") || lowerSpeech.contains("ate")) return 8;
+        if (lowerSpeech.contains("nine") || lowerSpeech.equals("9") || lowerSpeech.contains("nein")) return 9;
 
-        Log.w(TAG, "No valid menu number found in: " + speech);
+        // Try to extract pure numbers
+        String digitsOnly = speech.replaceAll("[^0-9]", "");
+        if (digitsOnly.length() == 1) {
+            try {
+                return Integer.parseInt(digitsOnly);
+            } catch (NumberFormatException e) {
+                // Continue to no match
+            }
+        }
+
+        Log.w(TAG, "No valid digit found in: '" + speech + "'");
         return -1;
     }
 
-    // RecognitionListener implementation (keep your working methods)
+    // NEW: Check for completion commands
+    private boolean isDoneCommand(String speech) {
+        String lowerSpeech = speech.toLowerCase().trim();
+        return lowerSpeech.contains("done") ||
+                lowerSpeech.contains("finished") ||
+                lowerSpeech.contains("complete") ||
+                lowerSpeech.contains("send") ||
+                lowerSpeech.equals("end");
+    }
+
     @Override
     public void onReadyForSpeech(Bundle params) {
         Log.d(TAG, "🟢 === READY FOR " + currentMode + " SPEECH ===");
@@ -267,21 +285,25 @@ public class STTManager implements RecognitionListener {
         Log.d(TAG, "🔴 === END OF " + currentMode + " SPEECH ===");
         isListening = false;
 
-        // For long input, automatically restart listening unless timeout occurred
-        if (currentMode == InputMode.LONG_INPUT) {
-            new Handler(Looper.getMainLooper()).postDelayed(() -> {
-                if (!isListening && speechRecognizer != null) {
-                    startListening(); // Continue listening for more digits
-                }
-            }, 200); // Short delay before restarting
-        }
+        // NEW: No automatic restart - wait for explicit command from USSDDetectorService
+        // This is the key change that implements our "menu-like loop" strategy
+        Log.d(TAG, "Waiting for explicit restart command...");
     }
 
     @Override
     public void onError(int error) {
         isListening = false;
         String errorMessage = getErrorText(error);
-        Log.e(TAG, "❌ === STT ERROR: " + errorMessage + " ===");
+        Log.e(TAG, "❌ === STT ERROR: " + errorMessage + " (Code: " + error + ") ===");
+
+        // NEW: For digit-by-digit mode, some errors can be handled gracefully
+        if (currentMode == InputMode.DIGIT_BY_DIGIT) {
+            if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                // Don't report as error, just let the system continue
+                Log.d(TAG, "No match in digit-by-digit mode, ready for next attempt");
+                return;
+            }
+        }
 
         if (callback != null) {
             callback.onSTTError(errorMessage);
@@ -304,31 +326,48 @@ public class STTManager implements RecognitionListener {
             return;
         }
 
-        String recognizedText = matches.get(0);
-        Log.d(TAG, "Processing: '" + recognizedText + "' for mode: " + currentMode);
+        // Try all matches to find the best result
+        for (String match : matches) {
+            Log.d(TAG, "Trying match: '" + match + "'");
 
-        int digit = extractMenuNumber(recognizedText);
-
-        if (digit != -1) {
             if (currentMode == InputMode.MENU) {
-                // Existing working functionality for menu
-                Log.d(TAG, "✅ === EXTRACTED MENU NUMBER: " + digit + " ===");
-                if (callback != null) {
-                    callback.onNumberRecognized(digit);
+                // KEEP: Existing working menu logic
+                int digit = extractDigit(match);
+                if (digit != -1) {
+                    Log.d(TAG, "✅ === EXTRACTED MENU NUMBER: " + digit + " ===");
+                    if (callback != null) {
+                        callback.onNumberRecognized(digit);
+                    }
+                    return;
                 }
-            } else if (currentMode == InputMode.LONG_INPUT) {
-                // NEW: Real-time digit capture
-                longInputBuffer.append(digit);
-                Log.d(TAG, "✅ === CAPTURED DIGIT: " + digit + " (Buffer: " + longInputBuffer.toString() + ") ===");
-
-                if (callback != null) {
-                    callback.onDigitRecognized(digit);
+            } else if (currentMode == InputMode.DIGIT_BY_DIGIT) {
+                // NEW: Check for "done" command first
+                if (isDoneCommand(match)) {
+                    Log.d(TAG, "✅ === USER SAID DONE ===");
+                    if (callback != null) {
+                        callback.onDoneCommandRecognized();
+                    }
+                    return;
                 }
 
-                // Reset the 3-second timeout
-                resetLongInputTimeout();
+                // Then check for digit
+                int digit = extractDigit(match);
+                if (digit != -1) {
+                    longInputBuffer.append(digit);
+                    Log.d(TAG, "✅ === CAPTURED DIGIT: " + digit + " (Buffer: " + longInputBuffer.toString() + ") ===");
+
+                    if (callback != null) {
+                        callback.onDigitRecognized(digit);
+                    }
+
+                    // Reset the completion timeout
+                    resetCompletionTimeout();
+                    return;
+                }
             }
         }
+
+        Log.w(TAG, "No valid result found in any of the " + matches.size() + " matches");
     }
 
     @Override
@@ -339,28 +378,50 @@ public class STTManager implements RecognitionListener {
                 String partialText = partialMatches.get(0);
                 Log.d(TAG, "🔄 Partial (" + currentMode + "): '" + partialText + "'");
 
-                // Check if we have a clear number
-                int digit = extractMenuNumber(partialText);
-                if (digit != -1) {
-                    Log.d(TAG, "✅ === FOUND " + currentMode + " NUMBER IN PARTIAL: " + digit + " ===");
+                if (currentMode == InputMode.MENU) {
+                    // KEEP: Existing working partial logic for menu
+                    int digit = extractDigit(partialText);
+                    if (digit != -1) {
+                        Log.d(TAG, "✅ === FOUND MENU NUMBER IN PARTIAL: " + digit + " ===");
 
-                    // Stop listening immediately for quicker response
-                    if (speechRecognizer != null && isListening) {
-                        speechRecognizer.stopListening();
-                        isListening = false;
-                    }
+                        if (speechRecognizer != null && isListening) {
+                            speechRecognizer.stopListening();
+                            isListening = false;
+                        }
 
-                    // Process the result
-                    if (currentMode == InputMode.MENU) {
                         if (callback != null) {
                             callback.onNumberRecognized(digit);
                         }
-                    } else if (currentMode == InputMode.LONG_INPUT) {
-                        longInputBuffer.append(digit);
-                        if (callback != null) {
-                            callback.onDigitRecognized(digit);
+                    }
+                } else if (currentMode == InputMode.DIGIT_BY_DIGIT) {
+                    // NEW: Handle partial results for digit-by-digit
+                    if (isDoneCommand(partialText)) {
+                        Log.d(TAG, "✅ === FOUND DONE COMMAND IN PARTIAL ===");
+
+                        if (speechRecognizer != null && isListening) {
+                            speechRecognizer.stopListening();
+                            isListening = false;
                         }
-                        resetLongInputTimeout();
+
+                        if (callback != null) {
+                            callback.onDoneCommandRecognized();
+                        }
+                    } else {
+                        int digit = extractDigit(partialText);
+                        if (digit != -1) {
+                            Log.d(TAG, "✅ === FOUND DIGIT IN PARTIAL: " + digit + " ===");
+
+                            if (speechRecognizer != null && isListening) {
+                                speechRecognizer.stopListening();
+                                isListening = false;
+                            }
+
+                            longInputBuffer.append(digit);
+                            if (callback != null) {
+                                callback.onDigitRecognized(digit);
+                            }
+                            resetCompletionTimeout();
+                        }
                     }
                 }
             }
@@ -373,7 +434,6 @@ public class STTManager implements RecognitionListener {
     }
 
     private String getErrorText(int errorCode) {
-        // Keep your existing error handling
         switch (errorCode) {
             case SpeechRecognizer.ERROR_AUDIO:
                 return "AUDIO recording error";
